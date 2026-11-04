@@ -6,3 +6,4 @@ from gui import PuzzleGUI
 if __name__ == "__main__":
     app = PuzzleGUI()
     app.mainloop()
+

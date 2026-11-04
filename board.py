@@ -49,3 +49,4 @@ class Board:
             self.move(random.choice(choices))
             previous_blank = old_blank
 
+

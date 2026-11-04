@@ -8,6 +8,7 @@ DB_CONNECTION_STRING，例如：
 DRIVER={ODBC Driver 17 for SQL Server};SERVER=.\\SQLEXPRESS01;DATABASE=EightPuzzleDB;Trusted_Connection=yes;
 """
 
+
 import os
 from typing import Any
 

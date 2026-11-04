@@ -11,9 +11,28 @@
 5. 提供登录、难度、存档、排行榜、提示和自动求解的界面入口
 具体的数据存取与搜索逻辑由 databaseevent.solve 等模块实现，本文件只负责界面与调用。
 """
+
 #2026 10/30 hyh第一次修改  添加本文件
+import os
 import sys
 import time
+
+# 修本机 Python 3.13 安装 bug：venv 继承的 tcl 路径是硬编码的 "D:/lib/tcl8.6"，
+# 但实际 tcl/tk 装在 D:\tcl\tcl8.6 和 D:\tcl\tk8.6。
+# 必须在 import tkinter 之前设好，否则 TclError: Can't find a usable init.tcl。
+for _key, _candidate in (
+    ("TCL_LIBRARY", [r"D:\tcl\tcl8.6", r"D:\lib\tcl8.6", r"D:\tcl"]),
+    ("TK_LIBRARY", [r"D:\tcl\tk8.6", r"D:\lib\tk8.6", r"D:\tcl"]),
+):
+    if not os.environ.get(_key):
+        for _c in _candidate:
+            if os.path.isdir(_c) and (
+                _key == "TCL_LIBRARY" and os.path.isfile(os.path.join(_c, "init.tcl"))
+                or _key == "TK_LIBRARY" and os.path.isfile(os.path.join(_c, "tk.tcl"))
+            ):
+                os.environ[_key] = _c
+                break
+
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
@@ -30,19 +49,54 @@ def _load_database():
 
     本机 Python 3.13 安装有 bug：site.getsitepackages() 返回的路径缺反斜杠，
     导致 pyodbc 所在的 D:\\Lib\\site-packages 默认不在 sys.path 里。
-    这里先把它硬塞进去，再做 import。
+    PyCharm Run 还会清理 PATH 和 DLL 搜索路径，导致 pyodbc 报
+    "DLL load failed while importing pyodbc: 参数错误"。
+
+    这里用三层兜底：sys.path 补丁 + os.environ[PATH] 补丁 + 直接 Win32
+    AddDllDirectory() 注册 DLL 搜索路径，不管 PyCharm 怎么清都能 import。
     """
-    # 1) databaseevent 目录（带连字符，Python 默认不会把它当包找）
+    import os as _os
+
+    # 0) Win32 原生 DLL 搜索路径注册（最底层，绕过 PATH）
+    try:
+        import ctypes as _ctypes
+        _dll_dirs = [
+            r"C:\Windows\System32",
+            r"D:\Lib\site-packages",
+            r"D:\DLLs",
+            r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn",
+        ]
+        for d in _dll_dirs:
+            if Path(d).exists():
+                _ctypes.windll.kernel32.AddDllDirectory(d)
+    except Exception:
+        pass
+
+    # 1) 确保 PATH 里有 Windows ODBC 相关目录（PyCharm Run 默认会清掉它们）
+    _odbc_dirs = [
+        r"C:\Windows\System32",
+        r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn",
+        r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\130\Tools\Binn",
+        r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\110\Tools\Binn",
+        r"C:\Program Files (x86)\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn",
+    ]
+    _path = _os.environ.get("PATH", "")
+    for d in _odbc_dirs:
+        if Path(d).exists() and d not in _path:
+            _os.environ["PATH"] = d + ";" + _path
+            _path = _os.environ["PATH"]
+
+    # 2) databaseevent 目录（带连字符，Python 默认不会把它当包找）
     db_dir = str(DB_DIRECTORY)
     if db_dir not in sys.path:
         sys.path.insert(0, db_dir)
 
-    # 2) pyodbc 所在的 site-packages（修 Python 安装路径 bug）
+    # 3) pyodbc 所在的 site-packages（修 Python 安装路径 bug）
     site_pkg = r"D:\Lib\site-packages"
     if Path(site_pkg).exists() and site_pkg not in sys.path:
         sys.path.insert(0, site_pkg)
 
-    # 3) 兜底：site 模块的候选路径里找第一个存在的
+    # 4) 兜底：site 模块的候选路径里找第一个存在的
     try:
         import site as _site
         for getter in (_site.getsitepackages, _site.getusersitepackages):
