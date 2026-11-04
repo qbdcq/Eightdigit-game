@@ -26,14 +26,48 @@ DB_DIRECTORY = Path(__file__).resolve().parent / "Database-event"
 
 
 def _load_database():
-    """databaseevent.py 位于带连字符的 Database-event 目录，需要先补 sys.path。"""
-    try:
-        if str(DB_DIRECTORY) not in sys.path:
-            sys.path.insert(0, str(DB_DIRECTORY))
-        import databaseevent
+    """让 databaseevent 模块可用。
 
-        return databaseevent
+    本机 Python 3.13 安装有 bug：site.getsitepackages() 返回的路径缺反斜杠，
+    导致 pyodbc 所在的 D:\\Lib\\site-packages 默认不在 sys.path 里。
+    这里先把它硬塞进去，再做 import。
+    """
+    # 1) databaseevent 目录（带连字符，Python 默认不会把它当包找）
+    db_dir = str(DB_DIRECTORY)
+    if db_dir not in sys.path:
+        sys.path.insert(0, db_dir)
+
+    # 2) pyodbc 所在的 site-packages（修 Python 安装路径 bug）
+    site_pkg = r"D:\Lib\site-packages"
+    if Path(site_pkg).exists() and site_pkg not in sys.path:
+        sys.path.insert(0, site_pkg)
+
+    # 3) 兜底：site 模块的候选路径里找第一个存在的
+    try:
+        import site as _site
+        for getter in (_site.getsitepackages, _site.getusersitepackages):
+            try:
+                p = getter()
+                candidates = [p] if isinstance(p, str) else list(p)
+                for c in candidates:
+                    if c and Path(c).exists() and c not in sys.path:
+                        sys.path.insert(0, c)
+            except Exception:
+                pass
     except Exception:
+        pass
+
+    try:
+        import pyodbc  # noqa: F401
+    except Exception as exc:
+        print(f"[gui] pyodbc 不可用: {exc}", file=sys.stderr)
+        return None
+
+    try:
+        import databaseevent
+        return databaseevent
+    except Exception as exc:
+        print(f"[gui] databaseevent 不可用: {exc}", file=sys.stderr)
         return None
 
 
