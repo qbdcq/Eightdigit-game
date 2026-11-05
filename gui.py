@@ -12,26 +12,12 @@
 具体的数据存取与搜索逻辑由 databaseevent.solve 等模块实现，本文件只负责界面与调用。
 """
 
-#2026 10/30 hyh第一次修改  添加本文件
-import os
 import sys
 import time
+from runtime_patch import apply_runtime_patches
 
-# 修本机 Python 3.13 安装 bug：venv 继承的 tcl 路径是硬编码的 "D:/lib/tcl8.6"，
-# 但实际 tcl/tk 装在 D:\tcl\tcl8.6 和 D:\tcl\tk8.6。
-# 必须在 import tkinter 之前设好，否则 TclError: Can't find a usable init.tcl。
-for _key, _candidate in (
-    ("TCL_LIBRARY", [r"D:\tcl\tcl8.6", r"D:\lib\tcl8.6", r"D:\tcl"]),
-    ("TK_LIBRARY", [r"D:\tcl\tk8.6", r"D:\lib\tk8.6", r"D:\tcl"]),
-):
-    if not os.environ.get(_key):
-        for _c in _candidate:
-            if os.path.isdir(_c) and (
-                _key == "TCL_LIBRARY" and os.path.isfile(os.path.join(_c, "init.tcl"))
-                or _key == "TK_LIBRARY" and os.path.isfile(os.path.join(_c, "tk.tcl"))
-            ):
-                os.environ[_key] = _c
-                break
+# 本机环境兼容逻辑与界面代码分离；必须在导入 tkinter 前执行。
+apply_runtime_patches()
 
 import tkinter as tk
 from pathlib import Path
@@ -45,78 +31,10 @@ DB_DIRECTORY = Path(__file__).resolve().parent / "Database-event"
 
 
 def _load_database():
-    """让 databaseevent 模块可用。
-
-    本机 Python 3.13 安装有 bug：site.getsitepackages() 返回的路径缺反斜杠，
-    导致 pyodbc 所在的 D:\\Lib\\site-packages 默认不在 sys.path 里。
-    PyCharm Run 还会清理 PATH 和 DLL 搜索路径，导致 pyodbc 报
-    "DLL load failed while importing pyodbc: 参数错误"。
-
-    这里用三层兜底：sys.path 补丁 + os.environ[PATH] 补丁 + 直接 Win32
-    AddDllDirectory() 注册 DLL 搜索路径，不管 PyCharm 怎么清都能 import。
-    """
-    import os as _os
-
-    # 0) Win32 原生 DLL 搜索路径注册（最底层，绕过 PATH）
-    try:
-        import ctypes as _ctypes
-        _dll_dirs = [
-            r"C:\Windows\System32",
-            r"D:\Lib\site-packages",
-            r"D:\DLLs",
-            r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn",
-        ]
-        for d in _dll_dirs:
-            if Path(d).exists():
-                _ctypes.windll.kernel32.AddDllDirectory(d)
-    except Exception:
-        pass
-
-    # 1) 确保 PATH 里有 Windows ODBC 相关目录（PyCharm Run 默认会清掉它们）
-    _odbc_dirs = [
-        r"C:\Windows\System32",
-        r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn",
-        r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\130\Tools\Binn",
-        r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\110\Tools\Binn",
-        r"C:\Program Files (x86)\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn",
-    ]
-    _path = _os.environ.get("PATH", "")
-    for d in _odbc_dirs:
-        if Path(d).exists() and d not in _path:
-            _os.environ["PATH"] = d + ";" + _path
-            _path = _os.environ["PATH"]
-
-    # 2) databaseevent 目录（带连字符，Python 默认不会把它当包找）
+    """加载数据库模块；机器相关兼容逻辑位于 runtime_patch.py。"""
     db_dir = str(DB_DIRECTORY)
     if db_dir not in sys.path:
         sys.path.insert(0, db_dir)
-
-    # 3) pyodbc 所在的 site-packages（修 Python 安装路径 bug）
-    site_pkg = r"D:\Lib\site-packages"
-    if Path(site_pkg).exists() and site_pkg not in sys.path:
-        sys.path.insert(0, site_pkg)
-
-    # 4) 兜底：site 模块的候选路径里找第一个存在的
-    try:
-        import site as _site
-        for getter in (_site.getsitepackages, _site.getusersitepackages):
-            try:
-                p = getter()
-                candidates = [p] if isinstance(p, str) else list(p)
-                for c in candidates:
-                    if c and Path(c).exists() and c not in sys.path:
-                        sys.path.insert(0, c)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    try:
-        import pyodbc  # noqa: F401
-    except Exception as exc:
-        print(f"[gui] pyodbc 不可用: {exc}", file=sys.stderr)
-        return None
-
     try:
         import databaseevent
         return databaseevent
@@ -151,10 +69,10 @@ class PuzzleGUI(tk.Tk):
         super().__init__()
 
         self.title("八数码游戏")
-        self.geometry("920x800")
-        self.minsize(820, 740)
+        self.geometry("680x600")
+        self.minsize(680, 600)
         self.configure(bg=self.BG)
-        self.resizable(True, True)
+        self.resizable(False, False)
 
         self.board = Board()
         self.initial_state = self.board.state
@@ -187,6 +105,7 @@ class PuzzleGUI(tk.Tk):
 
         self.tile_rects = []
         self._build_interface()
+        self._bind_keyboard_controls()
         self._draw_board()
         self._refresh_stats()
         self.new_game()
@@ -495,7 +414,6 @@ class PuzzleGUI(tk.Tk):
         cell = size / 3
         start_x = (width - size) / 2
         start_y = (height - size) / 2
-
         movable = set(self.board.movable_indexes())
 
         for index, value in enumerate(self.board.state):
@@ -1189,6 +1107,193 @@ class PuzzleGUI(tk.Tk):
         )
         self._draw_board()
         self._refresh_stats()
+
+    # ---------- 简洁界面（覆盖上方保留的旧版装饰性实现） ----------
+    def _build_interface(self):
+        """构建紧凑的基础界面，保留全部游戏入口。"""
+        root = tk.Frame(self, bg=self.BG)
+        root.pack(fill="both", expand=True, padx=12, pady=10)
+
+        header = tk.Frame(root, bg=self.BG)
+        header.pack(fill="x")
+        tk.Label(
+            header, text="八数码游戏", font=("Microsoft YaHei", 15, "bold"),
+            fg=self.TEXT, bg=self.BG,
+        ).pack(side="left")
+
+        self.status_badge = tk.Label(
+            header, text="未开始", font=("Microsoft YaHei", 9),
+            fg=self.SUCCESS, bg=self.BG,
+        )
+        self.status_badge.pack(side="right")
+
+        login_box = tk.Frame(root, bg=self.BG)
+        login_box.pack(fill="x", pady=(8, 5))
+        tk.Label(login_box, text="昵称：", font=("Microsoft YaHei", 9),
+                 fg=self.MUTED, bg=self.BG).pack(side="left")
+        self.nickname_entry = tk.Entry(
+            login_box, textvariable=self.nickname_var, width=12,
+            font=("Microsoft YaHei", 9), bg=self.PANEL_LIGHT, fg=self.TEXT,
+            insertbackground=self.TEXT, relief="flat", bd=0,
+        )
+        self.nickname_entry.pack(side="left", padx=(0, 5), ipady=4)
+        self.nickname_entry.bind("<Return>", lambda _event: self.login())
+        tk.Button(
+            login_box, text="登录", command=self.login, width=6,
+            font=("Microsoft YaHei", 9), bg=self.TILE, fg=self.TEXT,
+            activebackground=self.TILE_HOVER, activeforeground=self.TEXT,
+            relief="flat", bd=0,
+        ).pack(side="left", ipady=2)
+        self.player_label = tk.Label(
+            login_box, text="当前玩家：未登录", font=("Microsoft YaHei", 9),
+            fg=self.MUTED, bg=self.BG,
+        )
+        self.player_label.pack(side="left", padx=10)
+
+        self.steps_var = tk.StringVar(value="0")
+        self.time_var = tk.StringVar(value="00:00")
+        self.progress_var = tk.StringVar(value="0 / 8")
+        stats = tk.Frame(root, bg=self.PANEL, padx=8, pady=6)
+        stats.pack(fill="x", pady=(0, 8))
+        for label, variable in (
+            ("步数", self.steps_var),
+            ("用时", self.time_var),
+            ("归位", self.progress_var),
+        ):
+            tk.Label(stats, text=f"{label}：", font=("Microsoft YaHei", 9),
+                     fg=self.MUTED, bg=self.PANEL).pack(side="left")
+            tk.Label(stats, textvariable=variable, font=("Microsoft YaHei", 9, "bold"),
+                     fg=self.TEXT, bg=self.PANEL).pack(side="left", padx=(0, 18))
+
+        body = tk.Frame(root, bg=self.BG)
+        body.pack(fill="both", expand=True)
+        board_area = tk.Frame(body, bg=self.BG)
+        board_area.pack(side="left")
+        self.board_canvas = tk.Canvas(
+            board_area, width=390, height=390,
+            bg=self.PANEL, highlightthickness=1, highlightbackground="#344867",
+        )
+        self.board_canvas.pack()
+        self.board_canvas.bind("<Configure>", self._on_board_resize)
+
+        controls = tk.Frame(body, bg=self.BG, width=210)
+        controls.pack(side="right", fill="y", padx=(12, 0))
+        controls.pack_propagate(False)
+
+        tk.Label(controls, text="难度", font=("Microsoft YaHei", 9, "bold"),
+                 fg=self.MUTED, bg=self.BG).pack(anchor="w")
+        difficulty_row = tk.Frame(controls, bg=self.BG)
+        difficulty_row.pack(fill="x", pady=(3, 6))
+        for name in self.DIFFICULTY_STEPS:
+            button = tk.Button(
+                difficulty_row, text=name, command=lambda n=name: self.set_difficulty(n),
+                font=("Microsoft YaHei", 8), padx=2, pady=3,
+                bg=self.PANEL_LIGHT, fg=self.TEXT,
+                activebackground=self.TILE_HOVER, activeforeground=self.TEXT,
+                relief="flat", bd=0,
+            )
+            button.pack(side="left", expand=True, fill="x", padx=1)
+            self.difficulty_buttons[name] = button
+        self._refresh_difficulty_buttons()
+
+        for text, command in (
+            ("新游戏", self.new_game),
+            ("重新开始", self.restart),
+            ("保存进度", self.save_progress),
+            ("读取存档", self.open_saves),
+            ("单步提示", self.hint_step),
+            ("自动求解", self.auto_solve),
+            ("排行榜", self.show_leaderboard),
+            ("手动输入局面", self.open_manual_input),
+        ):
+            tk.Button(
+                controls, text=text, command=command,
+                font=("Microsoft YaHei", 9), pady=4,
+                bg=self.PANEL_LIGHT, fg=self.TEXT,
+                activebackground=self.TILE_HOVER, activeforeground=self.TEXT,
+                relief="flat", bd=0,
+            ).pack(fill="x", pady=2)
+
+        self.hint_label = tk.Label(
+            root, text="点击与空格相邻的数字移动。",
+            font=("Microsoft YaHei", 9), fg=self.MUTED, bg=self.BG,
+            anchor="w", justify="left", wraplength=650,
+        )
+        self.hint_label.pack(fill="x", pady=(7, 0))
+
+    def _draw_board(self):
+        """用普通方块绘制棋盘，避免阴影、圆角和动画装饰。"""
+        if not hasattr(self, "board_canvas"):
+            return
+        canvas = self.board_canvas
+        canvas.delete("all")
+        self.tile_rects.clear()
+
+        width = max(canvas.winfo_width(), 390)
+        height = max(canvas.winfo_height(), 390)
+        size = min(width, height) - 18
+        cell = size / 3
+        start_x = (width - size) / 2
+        start_y = (height - size) / 2
+
+        for index, value in enumerate(self.board.state):
+            row, col = divmod(index, 3)
+            x1 = start_x + col * cell + 3
+            y1 = start_y + row * cell + 3
+            x2 = start_x + (col + 1) * cell - 3
+            y2 = start_y + (row + 1) * cell - 3
+            tile_tag = f"tile_{index}"
+
+            if value == 0:
+                fill, outline = self.TILE_EMPTY, self.TILE_EMPTY
+            else:
+                fill, outline = self.TILE, "#344867"
+
+            rect = canvas.create_rectangle(
+                x1, y1, x2, y2, fill=fill, outline=outline, width=1, tags=(tile_tag,)
+            )
+            if value != 0:
+                canvas.create_text(
+                    (x1 + x2) / 2, (y1 + y2) / 2, text=str(value),
+                    fill=self.TEXT, font=("Arial", max(20, int(cell * 0.28)), "bold"),
+                    tags=(tile_tag,),
+                )
+                canvas.tag_bind(tile_tag, "<Button-1>", lambda _event, i=index: self._on_tile_click(i))
+            self.tile_rects.append(rect)
+
+
+    def _bind_keyboard_controls(self):
+        """绑定方向键；方向表示数字方块实际移动的方向。"""
+        for key in ("Left", "Right", "Up", "Down"):
+            self.bind_all(f"<{key}>", self._on_direction_key, add="+")
+
+    def _on_direction_key(self, event):
+        """根据空格位置找到应向指定方向移动的数字块。"""
+        # 文本输入时，方向键保留给输入控件本身。
+        if event.widget.winfo_class() in {
+            "Entry", "TEntry", "Combobox", "TCombobox", "Treeview",
+        }:
+            return None
+        if self.finished:
+            return "break"
+
+        blank = self.board.state.index(0)
+        row, col = divmod(blank, 3)
+        target_index = None
+
+        # 例如按左键：空格右侧的数字向左移动到空格位置。
+        if event.keysym == "Left" and col < 2:
+            target_index = blank + 1
+        elif event.keysym == "Right" and col > 0:
+            target_index = blank - 1
+        elif event.keysym == "Up" and row < 2:
+            target_index = blank + 3
+        elif event.keysym == "Down" and row > 0:
+            target_index = blank - 3
+
+        if target_index is not None:
+            self.move_tile(target_index)
+        return "break"
 
 
 if __name__ == "__main__":

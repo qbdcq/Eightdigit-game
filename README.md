@@ -15,7 +15,7 @@ AI 提高项：A* 搜索。实现自动求解和单步提示，使用不计空�
 ## 环境与安装
 - Python 版本
 - SQL Server 2022
-- ODBC Driver 18 for SQL Server
+- ODBC Driver 17 for SQL Server
 - pip install -r requirements.txt
 - 数据库名：EightPuzzleDB
 
@@ -40,8 +40,14 @@ AI 提高项：A* 搜索。实现自动求解和单步提示，使用不计空�
 - 用户干预后取消旧路径，并重新求解
 - 手动输入局面先判断合法性与可解性
 
-## 10.28
-新增了Player数据表，有id和nickname。
+
+
+## 11.5
+- 简化数据库连接
+- 简化gui
+- 补丁代码从主函数移除
+- 新增方向键移动功能
+- 降低了难度
 
 ## 10.29
 新增了GameRecord记录表，GameSaves存档表，Puzzles题目表
@@ -53,3 +59,6 @@ AI 提高项：A* 搜索。实现自动求解和单步提示，使用不计空�
 - 查询玩家存档：玩家id->列表
 - 打开存档：玩家id，存档名称->地图，步数，用时，提示次数，是否使用自动求解（t/f）
 - 查询排名：筛选难度->列表（排序：步数>用时>提示次数）
+
+## 10.28
+新增了Player数据表，有id和nickname。
