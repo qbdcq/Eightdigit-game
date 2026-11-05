@@ -9,83 +9,23 @@ DRIVER={ODBC Driver 17 for SQL Server};SERVER=.\\SQLEXPRESS01;DATABASE=EightPuzz
 """
 
 
-import os
+
 from typing import Any
 
 import pyodbc
 
 
-def _pick_driver() -> str:
-    """挑选本机可用的 SQL Server ODBC 驱动（优先级 17 > 18 > 系统自带）。"""
-    available = set(pyodbc.drivers())
-    for candidate in ("ODBC Driver 17 for SQL Server",
-                      "ODBC Driver 18 for SQL Server",
-                      "SQL Server"):
-        if candidate in available:
-            return candidate
-    raise RuntimeError(
-        "未检测到 SQL Server ODBC 驱动，请先安装 ODBC Driver 17 for SQL Server。"
-    )
-
-
-def _default_server() -> str:
-    """优先选「上面已经存在 EightPuzzleDB」的实例；都没有再退化为普通连通性探测。"""
-    driver = _pick_driver()
-    # 常见本机实例按优先级排序：EXPRESS01 在前（因为这台机器上它有库）。
-    instance_order = (
-        r".\SQLEXPRESS01", r".\SQLEXPRESS",
-        r"(local)\SQLEXPRESS01", r"(local)\SQLEXPRESS",
-        "localhost", ".",
-    )
-    # 第一轮：直接尝试连上 EightPuzzleDB，命中即返回。
-    for server in instance_order:
-        try:
-            cs = (
-                f"DRIVER={{{driver}}};"
-                f"SERVER={server};"
-                "DATABASE=EightPuzzleDB;"
-                "Trusted_Connection=yes;"
-                "TrustServerCertificate=yes;"
-                "Connect Timeout=2;"
-            )
-            conn = pyodbc.connect(cs)
-            conn.close()
-            return server
-        except pyodbc.Error:
-            continue
-    # 第二轮：库不存在，退化为普通连通探测，把错误留给后续调用。
-    for server in instance_order:
-        try:
-            cs = (
-                f"DRIVER={{{driver}}};"
-                f"SERVER={server};"
-                "Trusted_Connection=yes;"
-                "Connect Timeout=2;"
-            )
-            conn = pyodbc.connect(cs)
-            conn.close()
-            return server
-        except pyodbc.Error:
-            continue
-    return r".\SQLEXPRESS01"
-
-
-_DEFAULT_DRIVER = _pick_driver()
-_DEFAULT_SERVER = _default_server()
-
 DEFAULT_CONNECTION_STRING = (
-    f"DRIVER={{{_DEFAULT_DRIVER}}};"
-    f"SERVER={_DEFAULT_SERVER};"
+    "DRIVER={ODBC Driver 17 for SQL Server};"
+    "SERVER=localhost,1433;"
     "DATABASE=EightPuzzleDB;"
     "Trusted_Connection=yes;"
     "TrustServerCertificate=yes;"
 )
 
 
-def get_connection() -> pyodbc.Connection:
-    """创建一个 SQL Server 连接。"""
-    connection_string = os.getenv("DB_CONNECTION_STRING", DEFAULT_CONNECTION_STRING)
-    return pyodbc.connect(connection_string)
+def get_connection():
+    return pyodbc.connect(DEFAULT_CONNECTION_STRING)
 
 
 def _row_to_dict(cursor: pyodbc.Cursor, row: Any) -> dict[str, Any]:

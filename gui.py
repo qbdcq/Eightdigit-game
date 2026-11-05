@@ -130,7 +130,7 @@ database = _load_database()
 
 class PuzzleGUI(tk.Tk):
     # 难度对应的随机移动次数（从终局反向漫步，保证生成的题目可解）
-    DIFFICULTY_STEPS = {"简单": 20, "普通": 40, "困难": 80}
+    DIFFICULTY_STEPS = {"简单": 3, "普通": 5, "困难": 7}
 
     # ---------- 视觉主题 ----------
     BG = "#0B1020"
