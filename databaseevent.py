@@ -226,6 +226,19 @@ def list_saves(player_id: int) -> list[dict[str, Any]]:
         connection.close()
 
 
+def delete_save(player_id: int, save_name: str) -> bool:
+    """删除指定存档；存在并删除时返回 True，不存在时返回 False。"""
+    sql = "DELETE FROM dbo.GameSaves WHERE player_id = ? AND save_name = ?;"
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(sql, player_id, save_name.strip())
+        connection.commit()
+        return cursor.rowcount > 0
+    finally:
+        connection.close()
+
+
 # -------------------- GameRecords / 排行榜 --------------------
 
 def add_game_record(

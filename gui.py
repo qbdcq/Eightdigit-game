@@ -1,6 +1,6 @@
 """
 八数码游戏 - GUI / 棋盘交互 / 计时模块
-依赖：项目现有 board.py、solver.py、Database-event/databaseevent.py
+依赖：项目现有 board.py、solver.py、databaseevent.py
 运行：python gui.py
 
 职责边界：
@@ -14,27 +14,16 @@
 
 import sys
 import time
-from runtime_patch import apply_runtime_patches
-
-# 本机环境兼容逻辑与界面代码分离；必须在导入 tkinter 前执行。
-apply_runtime_patches()
 
 import tkinter as tk
-from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 from board import Board
 from solver import is_solvable, solve
 
 
-DB_DIRECTORY = Path(__file__).resolve().parent / "Database-event"
-
-
 def _load_database():
-    """加载数据库模块；机器相关兼容逻辑位于 runtime_patch.py。"""
-    db_dir = str(DB_DIRECTORY)
-    if db_dir not in sys.path:
-        sys.path.insert(0, db_dir)
+    """加载数据库模块（与 gui.py 同目录）。"""
     try:
         import databaseevent
         return databaseevent
@@ -666,6 +655,8 @@ class PuzzleGUI(tk.Tk):
         self.hint_label.configure(
             text=f"欢迎回来，{nickname}！", fg=self.SUCCESS
         )
+        # 从昵称输入框夺走焦点，确保方向键等按键回到游戏逻辑。
+        self.focus_set()
 
     def set_difficulty(self, name):
         if name not in self.DIFFICULTY_STEPS:
@@ -838,7 +829,7 @@ class PuzzleGUI(tk.Tk):
 
         for save in saves:
             tree.insert(
-                "", "end",
+                "", "end", iid=str(save["id"]),
                 values=(
                     save["save_name"],
                     save["steps"],
@@ -856,14 +847,53 @@ class PuzzleGUI(tk.Tk):
             window.destroy()
             self.load_save(save_name)
 
+        def delete_selected():
+            selection = tree.selection()
+            if not selection:
+                return
+            save_name = tree.item(selection[0], "values")[0]
+            if not messagebox.askyesno(
+                "确认删档",
+                f"确定要删除存档「{save_name}」吗？此操作不可恢复。",
+                parent=window,
+            ):
+                return
+            ok = self._db_call(
+                "delete_save", self.player_id, save_name
+            )
+            if ok:
+                tree.delete(*tree.get_children())
+                refreshed = self._db_call("list_saves", self.player_id) or []
+                for s in refreshed:
+                    tree.insert(
+                        "", "end", iid=str(s["id"]),
+                        values=(
+                            s["save_name"],
+                            s["steps"],
+                            self._format_seconds(s["elapsed_seconds"]),
+                            s["hint_count"],
+                            s["saved_at"],
+                        ),
+                    )
+
         tree.bind("<Double-1>", load_selected)
 
+        btn_bar = tk.Frame(window, bg=self.BG)
+        btn_bar.pack(pady=(12, 16))
+
         tk.Button(
-            window, text="读取选中存档", command=load_selected,
+            btn_bar, text="读取选中存档", command=load_selected,
             font=("Microsoft YaHei", 9, "bold"), fg=self.ACCENT, bg="#102B3B",
             activeforeground=self.ACCENT, activebackground="#102B3B",
             relief="flat", bd=0, padx=16, pady=9, cursor="hand2"
-        ).pack(pady=(12, 16))
+        ).pack(side="left", padx=(0, 10))
+
+        tk.Button(
+            btn_bar, text="删除选中存档", command=delete_selected,
+            font=("Microsoft YaHei", 9, "bold"), fg=self.DANGER, bg="#3B1424",
+            activeforeground=self.DANGER, activebackground="#3B1424",
+            relief="flat", bd=0, padx=16, pady=9, cursor="hand2"
+        ).pack(side="left")
 
     def load_save(self, save_name):
         record = self._db_call("load_save", self.player_id, save_name)
