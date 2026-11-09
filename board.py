@@ -36,7 +36,7 @@ class Board:
         self.state = tuple(values)
         return True
 
-    def shuffle_from_goal(self, moves=40):
+    def shuffle_from_goal(self, moves):
         """从终局连续进行合法移动，因此生成的局面一定可解。"""
         self.reset()
         previous_blank = None

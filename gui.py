@@ -9,16 +9,16 @@
 3. 统计玩家移动步数
 4. 负责计时、完成状态和基础游戏控制
 5. 提供登录、难度、存档、排行榜、提示和自动求解的界面入口
-具体的数据存取与搜索逻辑由 databaseevent.solve 等模块实现，本文件只负责界面与调用。
+具体的数据存取由 databaseevent.py 实现，A* 搜索由 solver.py 实现；本文件负责界面与调用。
 """
 
 import sys
-import time
 
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from board import Board
+from game_timer import GameTimer
 from solver import is_solvable, solve
 
 
@@ -68,10 +68,8 @@ class PuzzleGUI(tk.Tk):
         self.steps = 0
         self.finished = self.board.is_solved()
 
-        # 计时状态：首次有效移动时开始。
-        self.elapsed_before = 0.0
-        self.started_at = None
-        self.timer_running = False
+        # 首次有效移动后开始计时；实现放在独立的计时模块中。
+        self.timer = GameTimer()
 
         # 数据库与玩家会话状态（数据库不可用时仍可本地游玩）。
         self.db = database
@@ -93,385 +91,16 @@ class PuzzleGUI(tk.Tk):
         self.auto_job = None
 
         self.tile_rects = []
+        self._setup_styles()
         self._build_interface()
         self._bind_keyboard_controls()
-        self._draw_board()
-        self._refresh_stats()
         self.new_game()
         self._tick_clock()
-
-    # ---------- 基础绘图 ----------
-    @staticmethod
-    def _rounded_rect(canvas, x1, y1, x2, y2, radius=18, **kwargs):
-        """使用平滑多边形绘制圆角矩形，避免依赖第三方 GUI 库。"""
-        points = [
-            x1 + radius, y1, x2 - radius, y1,
-            x2, y1, x2, y1 + radius,
-            x2, y2 - radius, x2, y2,
-            x2 - radius, y2, x1 + radius, y2,
-            x1, y2, x1, y2 - radius,
-            x1, y1 + radius, x1, y1
-        ]
-        return canvas.create_polygon(
-            points, smooth=True, splinesteps=24, **kwargs
-        )
-
-    def _card(self, parent, bg=None, padx=18, pady=16):
-        return tk.Frame(
-            parent, bg=bg or self.PANEL,
-            padx=padx, pady=pady
-        )
-
-    # ---------- 界面布局 ----------
-    def _build_interface(self):
-        outer = tk.Frame(self, bg=self.BG)
-        outer.pack(fill="both", expand=True, padx=34, pady=25)
-
-        # 顶部品牌区域
-        top = tk.Frame(outer, bg=self.BG)
-        top.pack(fill="x", pady=(0, 22))
-
-        brand = tk.Frame(top, bg=self.BG)
-        brand.pack(side="left")
-
-        logo = tk.Canvas(
-            brand, width=48, height=48,
-            bg=self.BG, highlightthickness=0
-        )
-        logo.pack(side="left", padx=(0, 13))
-        self._rounded_rect(
-            logo, 2, 2, 46, 46, 13,
-            fill="#1D3152", outline="#34527B", width=1
-        )
-        logo.create_text(
-            24, 24, text="8",
-            fill=self.ACCENT, font=("Arial", 25, "bold")
-        )
-
-        title_box = tk.Frame(brand, bg=self.BG)
-        title_box.pack(side="left", anchor="center")
-        tk.Label(
-            title_box, text="八数码游戏",
-            font=("Microsoft YaHei", 20, "bold"),
-            fg=self.TEXT, bg=self.BG
-        ).pack(anchor="w")
-        tk.Label(
-            title_box, text="经典八数码挑战",
-            font=("Microsoft YaHei", 9, "bold"),
-            fg=self.MUTED, bg=self.BG
-        ).pack(anchor="w", pady=(3, 0))
-
-        self.status_badge = tk.Label(
-            top, text="●  未开始",
-            font=("Microsoft YaHei", 9, "bold"),
-            fg=self.SUCCESS, bg="#142B35",
-            padx=13, pady=8
-        )
-        self.status_badge.pack(side="right", anchor="center")
-
-        # 玩家登录区域（位于状态徽标左侧）
-        player_box = tk.Frame(top, bg=self.BG)
-        player_box.pack(side="right", anchor="center", padx=(0, 14))
-
-        tk.Label(
-            player_box, text="昵称",
-            font=("Microsoft YaHei", 9), fg=self.MUTED, bg=self.BG
-        ).pack(side="left", padx=(0, 6))
-
-        self.nickname_entry = tk.Entry(
-            player_box, textvariable=self.nickname_var, width=11,
-            font=("Microsoft YaHei", 10), bg=self.PANEL_LIGHT, fg=self.TEXT,
-            insertbackground=self.TEXT, relief="flat", bd=0
-        )
-        self.nickname_entry.pack(side="left", ipady=6, padx=(0, 8))
-        self.nickname_entry.bind("<Return>", lambda _e: self.login())
-
-        tk.Button(
-            player_box, text="登录", command=self.login,
-            font=("Microsoft YaHei", 9, "bold"), fg=self.ACCENT,
-            bg="#102B3B", activeforeground=self.ACCENT,
-            activebackground="#102B3B", relief="flat", bd=0,
-            padx=12, pady=7, cursor="hand2"
-        ).pack(side="left")
-
-        self.player_label = tk.Label(
-            player_box, text="当前玩家：未登录",
-            font=("Microsoft YaHei", 9), fg=self.MUTED, bg=self.BG
-        )
-        self.player_label.pack(side="left", padx=(10, 0))
-
-        # 主体左右布局
-        body = tk.Frame(outer, bg=self.BG)
-        body.pack(fill="both", expand=True)
-
-        left = tk.Frame(body, bg=self.BG)
-        left.pack(side="left", fill="both", expand=True)
-
-        right = tk.Frame(body, bg=self.BG, width=245)
-        right.pack(side="right", fill="y", padx=(22, 0))
-        right.pack_propagate(False)
-
-        # 棋盘标题
-        board_heading = tk.Frame(left, bg=self.BG)
-        board_heading.pack(fill="x", pady=(0, 13))
-
-        tk.Label(
-            board_heading, text="棋盘",
-            font=("Microsoft YaHei", 11, "bold"),
-            fg=self.TEXT, bg=self.BG
-        ).pack(side="left")
-
-        tk.Label(
-            board_heading, text="3 × 3  网格",
-            font=("Microsoft YaHei", 9),
-            fg=self.MUTED, bg=self.BG
-        ).pack(side="right")
-
-        # 棋盘 Canvas
-        self.board_canvas = tk.Canvas(
-            left, width=500, height=500,
-            bg=self.PANEL, highlightthickness=0
-        )
-        self.board_canvas.pack(fill="both", expand=True)
-        self.board_canvas.bind("<Configure>", self._on_board_resize)
-
-        # 棋盘下方提示
-        self.hint_label = tk.Label(
-            left,
-            text="选择与空白格相邻的数字方块进行移动",
-            font=("Microsoft YaHei", 10),
-            fg=self.MUTED, bg=self.BG
-        )
-
-        # 棋盘下方操作栏：存档 / 提示 / 求解 / 排行榜 / 手动输入
-        actions = tk.Frame(left, bg=self.BG)
-        actions.pack(fill="x", pady=(12, 0))
-
-        for text, command, color in (
-            ("保存", self.save_progress, self.ACCENT),
-            ("读档", self.open_saves, "#D9DFFF"),
-            ("提示", self.hint_step, self.SUCCESS),
-            ("自动求解", self.auto_solve, self.ACCENT_2),
-            ("排行榜", self.show_leaderboard, self.ACCENT),
-            ("手动输入", self.open_manual_input, self.MUTED),
-        ):
-            self._small_button(actions, text, command, color).pack(
-                side="left", expand=True, fill="x", padx=3
-            )
-
-        self.hint_label.pack(pady=(12, 0))
-
-        # 右侧：数据卡片
-        tk.Label(
-            right, text="本局数据",
-            font=("Microsoft YaHei", 10, "bold"),
-            fg=self.MUTED, bg=self.BG
-        ).pack(anchor="w", pady=(2, 12))
-
-        stats = self._card(right, padx=16, pady=17)
-        stats.pack(fill="x")
-
-        self.steps_var = tk.StringVar(value="0")
-        self.time_var = tk.StringVar(value="00:00")
-        self.progress_var = tk.StringVar(value="0 / 8")
-
-        self._stat_item(stats, "步数", self.steps_var, self.ACCENT)
-        self._thin_divider(stats)
-        self._stat_item(stats, "用时", self.time_var, self.TEXT)
-        self._thin_divider(stats)
-        self._stat_item(stats, "已归位方块", self.progress_var, self.SUCCESS)
-
-        # 右侧：操作区
-        tk.Label(
-            right, text="游戏控制",
-            font=("Microsoft YaHei", 10, "bold"),
-            fg=self.MUTED, bg=self.BG
-        ).pack(anchor="w", pady=(22, 12))
-
-        # 难度选择：只影响下一局新游戏
-        difficulty_row = tk.Frame(right, bg=self.BG)
-        difficulty_row.pack(fill="x", pady=(0, 10))
-
-        for name in self.DIFFICULTY_STEPS:
-            button = tk.Button(
-                difficulty_row, text=name,
-                command=lambda n=name: self.set_difficulty(n),
-                font=("Microsoft YaHei", 9, "bold"),
-                relief="flat", bd=0, pady=8, cursor="hand2"
-            )
-            button.pack(side="left", expand=True, fill="x", padx=2)
-            self.difficulty_buttons[name] = button
-        self._refresh_difficulty_buttons()
-
-        self._action_button(
-            right, "＋  新游戏", self.new_game,
-            self.ACCENT, "#102B3B"
-        ).pack(fill="x", pady=5)
-
-        self._action_button(
-            right, "↺  重新开始", self.restart,
-            "#D9DFFF", "#242B4B"
-        ).pack(fill="x", pady=5)
-
-        # 底部状态栏
-        footer = tk.Frame(outer, bg=self.BG)
-        footer.pack(fill="x", pady=(18, 0))
-
-        tk.Label(
-            footer, text="八数码 · 桌面版",
-            font=("Microsoft YaHei", 8),
-            fg="#5F6F8E", bg=self.BG
-        ).pack(side="left")
-
-        tk.Label(
-            footer, text="使用 Python 制作",
-            font=("Microsoft YaHei", 8),
-            fg="#5F6F8E", bg=self.BG
-        ).pack(side="right")
-
-    def _stat_item(self, parent, label, variable, color):
-        block = tk.Frame(parent, bg=self.PANEL)
-        block.pack(fill="x", pady=7)
-
-        tk.Label(
-            block, text=label,
-            font=("Microsoft YaHei", 9, "bold"),
-            fg=self.MUTED, bg=self.PANEL
-        ).pack(anchor="w")
-
-        tk.Label(
-            block, textvariable=variable,
-            font=("Arial", 25, "bold"),
-            fg=color, bg=self.PANEL
-        ).pack(anchor="w", pady=(3, 0))
-
-    def _thin_divider(self, parent):
-        tk.Frame(parent, bg="#293752", height=1).pack(fill="x", pady=8)
-
-    def _action_button(self, parent, text, command, fg, bg):
-        button = tk.Button(
-            parent, text=text, command=command,
-            font=("Microsoft YaHei", 10, "bold"),
-            fg=fg, bg=bg,
-            activeforeground=fg, activebackground=bg,
-            relief="flat", bd=0,
-            padx=14, pady=13,
-            cursor="hand2"
-        )
-        button.bind("<Enter>", lambda _e: button.configure(
-            highlightthickness=1, highlightbackground=fg
-        ))
-        button.bind("<Leave>", lambda _e: button.configure(
-            highlightthickness=0
-        ))
-        return button
-
-    def _small_button(self, parent, text, command, fg):
-        """棋盘下方操作栏使用的小尺寸按钮。"""
-        button = tk.Button(
-            parent, text=text, command=command,
-            font=("Microsoft YaHei", 9, "bold"),
-            fg=fg, bg="#182642",
-            activeforeground=fg, activebackground="#22375C",
-            relief="flat", bd=0,
-            padx=8, pady=9,
-            cursor="hand2"
-        )
-        button.bind("<Enter>", lambda _e: button.configure(
-            highlightthickness=1, highlightbackground=fg
-        ))
-        button.bind("<Leave>", lambda _e: button.configure(
-            highlightthickness=0
-        ))
-        return button
 
     # ---------- 棋盘绘制 ----------
     def _on_board_resize(self, _event):
         self._draw_board()
 
-    def _draw_board(self):
-        if not hasattr(self, "board_canvas"):
-            return
-
-        canvas = self.board_canvas
-        canvas.delete("all")
-        self.tile_rects.clear()
-
-        width = max(canvas.winfo_width(), 300)
-        height = max(canvas.winfo_height(), 300)
-        size = min(width, height) - 34
-        cell = size / 3
-        start_x = (width - size) / 2
-        start_y = (height - size) / 2
-        movable = set(self.board.movable_indexes())
-
-        for index, value in enumerate(self.board.state):
-            row, col = divmod(index, 3)
-            x1 = start_x + col * cell + 7
-            y1 = start_y + row * cell + 7
-            x2 = start_x + (col + 1) * cell - 7
-            y2 = start_y + (row + 1) * cell - 7
-
-            if value == 0:
-                fill = self.TILE_EMPTY
-                outline = "#263550"
-            elif index in movable and not self.finished:
-                fill = self.TILE_MOVABLE
-                outline = "#4C91C5"
-            else:
-                fill = self.TILE
-                outline = "#344867"
-
-            # 方块阴影
-            if value != 0:
-                self._rounded_rect(
-                    canvas, x1 + 2, y1 + 5, x2 + 2, y2 + 5, 17,
-                    fill="#080D18", outline=""
-                )
-
-            tile_tag = f"tile_{index}"
-            rect = self._rounded_rect(
-                canvas, x1, y1, x2, y2, 17,
-                fill=fill, outline=outline, width=2,
-                tags=(tile_tag,)
-            )
-
-            if value != 0:
-                canvas.create_text(
-                    (x1 + x2) / 2, (y1 + y2) / 2,
-                    text=str(value),
-                    fill=self.TEXT,
-                    font=("Arial", max(20, int(cell * 0.27)), "bold"),
-                    tags=(tile_tag,)
-                )
-                # 方块背景和数字文字共用同一个点击标签。
-                canvas.tag_bind(
-                    tile_tag, "<Button-1>",
-                    lambda event, i=index: self._on_tile_click(i)
-                )
-                canvas.tag_bind(
-                    tile_tag, "<Enter>",
-                    lambda event, i=index: self._hover_tile(i, True)
-                )
-                canvas.tag_bind(
-                    tile_tag, "<Leave>",
-                    lambda event, i=index: self._hover_tile(i, False)
-                )
-
-            self.tile_rects.append(rect)
-
-    def _hover_tile(self, index, entering):
-        if self.finished:
-            return
-        if index not in self.board.movable_indexes():
-            return
-        # 只改变当前可移动格的视觉反馈；鼠标离开后统一重绘。
-        if entering:
-            self.board_canvas.itemconfig(
-                self.tile_rects[index], fill=self.TILE_HOVER
-            )
-        else:
-            self._draw_board()
 
     def _on_tile_click(self, index):
         self.move_tile(index)
@@ -485,55 +114,53 @@ class PuzzleGUI(tk.Tk):
         if self.auto_playing:
             self._cancel_auto_play()
             self._start_timer()
-            self.hint_label.configure(
-                text="已取消自动求解，可继续手动操作", fg=self.MUTED
-            )
+            self._set_hint("已取消自动求解，可继续手动操作")
 
         if not self.board.move(index):
-            self.hint_label.configure(
-                text="这一步不能移动：请选择与空白格相邻的数字",
-                fg=self.DANGER
-            )
+            self._set_hint("这一步不能移动：请选择与空白格相邻的数字", self.DANGER)
             self.after(1300, self._restore_hint)
             return
 
         self._start_timer()
         self.steps += 1
-        self._draw_board()
-        self._refresh_stats()
+        self._refresh_game_view()
 
         if self.board.is_solved():
             self._finish_game()
 
     def _restore_hint(self):
         if not self.finished:
-            self.hint_label.configure(
-                text="选择与空白格相邻的数字方块进行移动",
-                fg=self.MUTED
-            )
+            self._set_hint("选择与空白格相邻的数字方块进行移动")
+
+    def _set_hint(self, text, color=None):
+        """统一更新底部提示文本。"""
+        self.hint_label.configure(text=text, fg=color or self.MUTED)
+
+    def _refresh_game_view(self):
+        """棋盘状态变化后，统一刷新棋盘与统计信息。"""
+        self._draw_board()
+        self._refresh_stats()
+
+    def _reset_round_progress(self):
+        """重置一局游戏的统计数据，不改变棋盘状态。"""
+        self.steps = 0
+        self.hint_count = 0
+        self.auto_solved = False
+        self._reset_timer()
 
     # ---------- 计时器 ----------
     def _elapsed(self):
-        total = self.elapsed_before
-        if self.timer_running and self.started_at is not None:
-            total += time.monotonic() - self.started_at
-        return max(0, int(total))
+        return self.timer.elapsed_seconds()
 
     def _start_timer(self):
-        if not self.timer_running and not self.finished:
-            self.started_at = time.monotonic()
-            self.timer_running = True
+        if not self.finished:
+            self.timer.start()
 
     def _stop_timer(self):
-        if self.timer_running and self.started_at is not None:
-            self.elapsed_before += time.monotonic() - self.started_at
-        self.timer_running = False
-        self.started_at = None
+        self.timer.stop()
 
     def _reset_timer(self):
-        self.elapsed_before = 0.0
-        self.started_at = None
-        self.timer_running = False
+        self.timer.reset()
 
     def _tick_clock(self):
         self._refresh_time()
@@ -576,43 +203,29 @@ class PuzzleGUI(tk.Tk):
         self.shuffle_steps = self.DIFFICULTY_STEPS[self.difficulty]
         self.board.shuffle_from_goal(self.shuffle_steps)
         self.initial_state = self.board.state
-        self.steps = 0
         self.finished = self.board.is_solved()
-        self.hint_count = 0
-        self.auto_solved = False
         self.puzzle_id = None
-        self._reset_timer()
-        self.hint_label.configure(
-            text=f"新挑战已生成（{self.difficulty} · 随机 {self.shuffle_steps} 步），移动方块开始游戏。",
-            fg=self.ACCENT
+        self._reset_round_progress()
+        self._set_hint(
+            f"新挑战已生成（{self.difficulty} · 随机 {self.shuffle_steps} 步），移动方块开始游戏。",
+            self.ACCENT,
         )
-        self._draw_board()
-        self._refresh_stats()
+        self._refresh_game_view()
 
     def restart(self):
         self._cancel_auto_play()
         self.board.reset(self.initial_state)
-        self.steps = 0
         self.finished = self.board.is_solved()
-        self.hint_count = 0
-        self.auto_solved = False
-        self._reset_timer()
-        self.hint_label.configure(
-            text="已恢复本局初始布局，计时和步数已重置。",
-            fg=self.MUTED
-        )
-        self._draw_board()
-        self._refresh_stats()
+        self._reset_round_progress()
+        self._set_hint("已恢复本局初始布局，计时和步数已重置。")
+        self._refresh_game_view()
 
     def _finish_game(self):
         self.finished = True
         self._stop_timer()
         self._cancel_auto_play()
-        self._draw_board()
-        self._refresh_stats()
-        self.hint_label.configure(
-            text="挑战完成！", fg=self.SUCCESS
-        )
+        self._refresh_game_view()
+        self._set_hint("挑战完成！", self.SUCCESS)
 
         # 登录且有对应题目记录时，写入完成记录。
         self._ensure_puzzle()
@@ -639,8 +252,11 @@ class PuzzleGUI(tk.Tk):
     # ---------- 玩家登录与难度 ----------
     def login(self):
         nickname = self.nickname_var.get().strip()
+        # 登录按钮是一次提交操作：点击后清空输入框并退出输入状态。
+        self.nickname_var.set("")
+        self.board_canvas.focus_set()
         if not nickname:
-            messagebox.showinfo("提示", "请先输入昵称。")
+            self.player_label.configure(text="当前玩家：请输入昵称", fg=self.DANGER)
             return
         player_id = self._db_call("login_player", nickname)
         if player_id is None:
@@ -656,7 +272,7 @@ class PuzzleGUI(tk.Tk):
             text=f"欢迎回来，{nickname}！", fg=self.SUCCESS
         )
         # 从昵称输入框夺走焦点，确保方向键等按键回到游戏逻辑。
-        self.focus_set()
+        self.board_canvas.focus_set()
 
     def set_difficulty(self, name):
         if name not in self.DIFFICULTY_STEPS:
@@ -689,10 +305,10 @@ class PuzzleGUI(tk.Tk):
                     "并配置好 ODBC Driver 18 for SQL Server。"
                 )
             return None
-        function = getattr(self.db, function_name)
         self.configure(cursor="watch")
         self.update_idletasks()
         try:
+            function = getattr(self.db, function_name)
             return function(*args)
         except Exception as exc:
             if not silent:
@@ -731,8 +347,8 @@ class PuzzleGUI(tk.Tk):
         total = int(total)
         return f"{total // 60:02d}:{total % 60:02d}"
 
-    def _make_treeview(self, parent, columns, height=10):
-        """创建深色风格的表格，columns 为 (字段名, 表头, 宽度)。"""
+    def _setup_styles(self):
+        """集中初始化 ttk 控件样式，避免每次打开窗口重复配置。"""
         style = ttk.Style(self)
         try:
             style.theme_use("clam")
@@ -741,15 +357,17 @@ class PuzzleGUI(tk.Tk):
         style.configure(
             "Puzzle.Treeview",
             background=self.PANEL, fieldbackground=self.PANEL,
-            foreground=self.TEXT, rowheight=26, borderwidth=0
+            foreground=self.TEXT, rowheight=26, borderwidth=0,
         )
         style.configure(
             "Puzzle.Treeview.Heading",
             background=self.PANEL_LIGHT, foreground=self.ACCENT,
-            relief="flat", font=("Microsoft YaHei", 9, "bold")
+            relief="flat", font=("Microsoft YaHei", 9, "bold"),
         )
         style.map("Puzzle.Treeview", background=[("selected", self.TILE_MOVABLE)])
 
+    def _make_treeview(self, parent, columns, height=10):
+        """创建深色风格的表格，columns 为 (字段名, 表头, 宽度)。"""
         tree = ttk.Treeview(
             parent, columns=[item[0] for item in columns],
             show="headings", style="Puzzle.Treeview", height=height
@@ -907,18 +525,12 @@ class PuzzleGUI(tk.Tk):
         self.initial_state = self.text_to_state(record["initial_state"])
         self.steps = int(record["steps"])
         self.hint_count = int(record["hint_count"])
-        self.elapsed_before = float(record["elapsed_seconds"])
-        self.started_at = None
-        self.timer_running = False
+        self.timer.reset(record["elapsed_seconds"])
         self.puzzle_id = int(record["puzzle_id"])
         self.auto_solved = False
         self.finished = self.board.is_solved()
-        self.hint_label.configure(
-            text=f"已读取存档「{record['save_name']}」，可继续游戏。",
-            fg=self.SUCCESS
-        )
-        self._draw_board()
-        self._refresh_stats()
+        self._set_hint(f"已读取存档「{record['save_name']}」，可继续游戏。", self.SUCCESS)
+        self._refresh_game_view()
 
     # ---------- 排行榜 ----------
     def show_leaderboard(self):
@@ -1001,10 +613,10 @@ class PuzzleGUI(tk.Tk):
         self.solve_index = 0
         target_index = path[1].index(0)
         self._highlight_tile(target_index)
-        self.hint_label.configure(
-            text=(f"提示：移动 {self.board.state[target_index]} 号方块"
-                  f" · 剩余 {len(path) - 1} 步 · 搜索节点 {expanded}"),
-            fg=self.SUCCESS
+        self._set_hint(
+            f"提示：移动 {self.board.state[target_index]} 号方块"
+            f" · 剩余 {len(path) - 1} 步 · 搜索节点 {expanded}",
+            self.SUCCESS,
         )
 
     def auto_solve(self):
@@ -1023,10 +635,7 @@ class PuzzleGUI(tk.Tk):
         self.solve_index = 0
         self.auto_playing = True
         self._stop_timer()  # 自动播放期间暂停计时
-        self.hint_label.configure(
-            text=f"自动求解：共 {len(path) - 1} 步 · 搜索节点 {expanded}",
-            fg=self.ACCENT_2
-        )
+        self._set_hint(f"自动求解：共 {len(path) - 1} 步 · 搜索节点 {expanded}", self.ACCENT_2)
         self._auto_step()
 
     def _auto_step(self):
@@ -1040,8 +649,7 @@ class PuzzleGUI(tk.Tk):
         self.solve_index += 1
         self.board.reset(self.solve_path[self.solve_index])
         self.steps += 1
-        self._draw_board()
-        self._refresh_stats()
+        self._refresh_game_view()
 
         if self.board.is_solved():
             self._finish_game()
@@ -1125,18 +733,12 @@ class PuzzleGUI(tk.Tk):
         self._cancel_auto_play()
         self.board.reset(state)
         self.initial_state = state
-        self.steps = 0
-        self.hint_count = 0
-        self.auto_solved = False
         self.puzzle_id = None
         self.shuffle_steps = 1
         self.finished = self.board.is_solved()
-        self._reset_timer()
-        self.hint_label.configure(
-            text="已载入手动局面，可开始移动。", fg=self.ACCENT
-        )
-        self._draw_board()
-        self._refresh_stats()
+        self._reset_round_progress()
+        self._set_hint("已载入手动局面，可开始移动。", self.ACCENT)
+        self._refresh_game_view()
 
     # ---------- 简洁界面（覆盖上方保留的旧版装饰性实现） ----------
     def _build_interface(self):
@@ -1295,7 +897,20 @@ class PuzzleGUI(tk.Tk):
     def _bind_keyboard_controls(self):
         """绑定方向键；方向表示数字方块实际移动的方向。"""
         for key in ("Left", "Right", "Up", "Down"):
-            self.bind_all(f"<{key}>", self._on_direction_key, add="+")
+            # 仅绑定主窗口，避免排行榜、存档等弹窗也触发棋盘移动。
+            self.bind(f"<{key}>", self._on_direction_key, add="+")
+        # 点击棋盘、按钮或空白区域时，释放输入框焦点，使方向键可立即控制棋盘。
+        self.bind_all("<Button-1>", self._release_text_focus, add="+")
+
+    def _release_text_focus(self, event):
+        """仅在主窗口的非文本控件上点击时，把焦点交回主窗口。"""
+        if event.widget.winfo_toplevel() != self._w:
+            return
+        if event.widget.winfo_class() in {
+            "Entry", "TEntry", "Combobox", "TCombobox", "Treeview",
+        }:
+            return
+        self.focus_set()
 
     def _on_direction_key(self, event):
         """根据空格位置找到应向指定方向移动的数字块。"""
